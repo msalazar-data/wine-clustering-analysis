@@ -1,0 +1,1534 @@
+---
+title: "Modelos no supervisados para clusterizacion de la base Wine"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+geometry: a4paper, left=3cm, right=2.5cm, top=2.5cm, bottom=2.5cm
+always_allow_html: true
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Instala y carga todos los paquetes de una sola vez
+pacman::p_load(
+  tidymodels,
+  tidyverse,
+  tibble,
+  dplyr,
+  ggplot2,
+  tidyr,
+  purrr,
+  tidyclust,
+  factoextra,
+  FactoMineR,
+  cluster,
+  mlr,
+  GGally,
+  ClusterR,
+  vegan,
+  NbClust,
+  gridExtra,
+  grid,
+  lattice,
+  igraph,
+  recipes,
+  rsample,
+  workflows,
+  tune,
+  parameters,
+  pvclust,
+  clustertend,
+  hopkins,
+  plotly,
+  clue,
+  clValid,
+  dbscan,
+  opticskxi
+)
+
+theme_set(theme_bw(16))
+
+df <- read.csv("wine.csv")
+df <- df %>% 
+  mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
+df_o <- df
+```
+
+``` {r Resumen datos, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+#Resumen de los datos
+
+df %>% dim()
+
+df %>% glimpse()
+
+df %>% head()
+
+df %>% dplyr::count(Type)
+
+df1<- df %>% dplyr::select(-Type) %>% scale()
+summary(df1)
+
+head(df1)
+```
+
+
+``` {r Calculando distancias, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+###Calculando distancias (distancia euclideana)
+
+dist_df <- dist(df1, method = "euclidean")
+
+hc_ave <- hclust(dist_df, method = "average")
+hc_single<-hclust(dist_df, method = "single")
+hc_comp<-hclust(dist_df, method = "complete")
+hc_ward<-hclust(dist_df, method = "ward.D")
+hc_ward2<-hclust(dist_df, method = "ward.D2")
+
+###Distancia cophenetic
+
+d_ave <- cophenetic(hc_ave)
+d_single <- cophenetic(hc_single)
+d_comp<- cophenetic(hc_comp)
+d_ward<- cophenetic(hc_ward)
+d_ward2<-cophenetic(hc_ward2)
+```
+
+# Introdución
+
+En el presente trabajo se realiza una comparación de distintos métodos de clusterización aplicados a la base de datos 'wine.csv', con el propósito de identificar la metodología que ofrezca el mayor poder predictivo. El análisis contempla técnicas, como K-Means + PCA, GMM, K-Means,Jerarquicos, Jerarquicos + PCA, Optics, K-Means con Tune, DBSCAN, HDBSCAN y FLEXMIX. La base de datos utilizada contiene 13 variables: una corresponde a la procedencia del vino y las restantes describen sus características químicas específicas. En adición, un objetivo primordial es determinar la cantidad óptima de clústeres sin recurrir a criterios sesgados ni depender exclusivamente de la información previamente etiquetada en la base (variable Type), garantizando así una evaluación imparcial de los resultados.
+
+# ¿Cuántos clusters?
+
+Una primera pregunta que debemos contestar es cuantos grupos existen de forma consistente en nuestra base de datos, para ello nos apoyamos de diversas herramientas, de donde podemos apreciar lo siguiente: 
+
+``` {r K-Means3, warning=FALSE, message=FALSE, echo=FALSE}
+
+#install.packages("see")
+
+###
+sink(nullfile())  # o tempfile()
+
+set.seed(123)
+
+elbow<-n_clusters_elbow(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  clustering_function = stats::kmeans,
+  n_max = 10
+)
+
+elbow
+
+plot(elbow)
+
+###
+
+set.seed(123)
+
+gap<-n_clusters_gap(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  clustering_function = stats::kmeans,
+  n_max = 10,
+  gap_method = "firstSEmax"
+)
+
+gap
+
+plot(gap)
+
+###
+
+set.seed(123)
+
+n_clusters_silhouette(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  clustering_function = stats::kmeans,
+  n_max = 10
+)
+
+###
+
+set.seed(123)
+
+dbscan<-n_clusters_dbscan(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  method = c("kNN", "SS"),
+  min_size = 0.1,
+  eps_n = 50,
+  eps_range = c(0.1, 3)
+)
+
+dbscan
+
+plot(dbscan)
+
+###
+
+set.seed(123)
+
+hclust<-n_clusters_hclust(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  distance_method = "euclidean",
+  hclust_method = "ward.D",
+  ci = 0.95,
+  iterations = 20
+)
+
+hclust
+
+plot(hclust)
+
+###
+
+set.seed(123) 
+
+hopkins_stat_value <- hopkins(scale(df[,-1]), m=20)
+
+print(hopkins_stat_value)
+
+clustertend::hopkins(scale(df[,-1]))  ###The value returned is: 1 - Hopkins statistic.
+
+sink()  # ¡IMPORTANTE! Restaurar después
+```
+
+Elbow Method sugiere un número óptimo de $k = 2$ clusters al identificarse el “codo” donde la reducción del error deja de ser significativa, mientras que el Gap Statistic indica que la mejor separación natural ocurre con $k = 3$ clusters; por otro lado, el método de DBSCAN mediante el gráfico de distancias recomienda un $EPS \approx 5$ (minPts $= 18$) como punto donde la pendiente cambia abruptamente, permitiendo diferenciar un solo cluster en todo el conjunto de datos, y finalmente el clustering jerárquico (Ward.D) confirma la existencia de una estructura clara en los datos, sugiriendo la presencia de 2 a 3 grupos principales bien definidos.
+
+### Otra forma de explorar
+
+``` {r K-Means receta, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+rec_df <- recipe(~.,data = df) %>%
+  update_role(Type, new_role = "id") %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) 
+
+rec_df
+
+kmeans_spec <- k_means(num_clusters = tune())
+
+kmeans_wf <- workflow(rec_df, kmeans_spec)
+
+kmeans_wf <- kmeans_wf %>% 
+  update_model(kmeans_spec)
+
+grid <- tibble(num_clusters = 1:10)
+
+set.seed(123)
+boots <- bootstraps(df, times = 10)
+
+res <- tune_cluster(
+  kmeans_wf,
+  resamples = boots,
+  grid = grid,
+  metrics = cluster_metric_set(sse_within_total, sse_total, sse_ratio)
+)
+
+res_metrics <- collect_metrics(res)%>% print(n=Inf)
+
+best <- res %>%
+  select_best(metric="sse_ratio")  ###Observese que este criterio es un poco "chafa", ya que esta medida
+best                               ### en general va decreciendo con el aumento en el valor de K
+
+res_metrics %>%
+  filter(.metric == "sse_ratio") %>%
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point(col="darkblue",size=2) +
+  geom_line(col="red") +
+  theme_minimal() +
+  ylab("mean WSS/TSS ratio") +
+  xlab("Número de clusters") +
+  scale_x_continuous(breaks = 1:10)
+```
+
+
+``` {r K-Means receta2aa, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+df_cv <- vfold_cv(df, v = 10)
+
+clust_num_grid <- grid_regular(num_clusters(),levels = 10)
+
+clust_num_grid
+
+res1 <- tune_cluster(
+  kmeans_wf,
+  resamples = df_cv,
+  grid = clust_num_grid,
+  control = control_grid(save_pred = TRUE, extract = identity),
+  metrics = cluster_metric_set(sse_within_total, sse_total, sse_ratio)
+)
+
+
+res1_metrics <- res1 %>% collect_metrics()%>% print(n=Inf)
+
+
+best1 <- res1 %>%
+  select_best(metric="sse_ratio")  ###Misma observación que antes
+best1
+
+
+res1_metrics %>%
+  filter(.metric == "sse_ratio") %>%
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point(col="darkblue",size=2) +
+  geom_line(col="red") +
+  theme_minimal() +
+  ylab("mean WSS/TSS ratio cv") +
+  xlab("Number of clusters") +
+  scale_x_continuous(breaks = 1:10)
+
+
+###A traves del metodo de silueta (silhouette)
+
+df1<- df %>% dplyr::select(-Type) %>% scale()
+
+k.max <- 10 
+
+sil_avg <- rep(0, k.max) 
+
+for (k in 2:k.max) {
+  kmeans_result <- kmeans(df1, centers = k, nstart = 25)
+  sil_info <- silhouette(kmeans_result$cluster, dist(df1))
+  sil_avg[k] <- mean(sil_info[, "sil_width"])
+}
+
+plot(2:k.max, sil_avg[2:k.max], type = "b",
+     xlab = "Number of clusters (k)",
+     ylab = "Average Silhouette Width",
+     main = "Silhouette Method for Optimal k")
+
+optimal_k <- which.max(sil_avg[2:k.max]) + 1 # Add 1 because we start from k=2
+print(paste("Optimal number of clusters (k):", optimal_k))
+
+nc<-n_clusters(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  package = c("easystats", "NbClust", "mclust"),
+  fast = TRUE,
+  nbclust_method = "kmeans",
+  n_max = 10
+)
+
+nc
+
+```
+
+``` {r K-Means receta2, warning=FALSE, message=FALSE, echo=FALSE}
+
+res1_metrics %>%
+  filter(.metric == "sse_ratio") %>%
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point(col="darkblue",size=2) +
+  geom_line(col="red") +
+  theme_minimal() +
+  ylab("mean WSS/TSS ratio cv") +
+  xlab("Number of clusters") +
+  scale_x_continuous(breaks = 1:10)
+
+plot(2:k.max, sil_avg[2:k.max], type = "b",
+     xlab = "Number of clusters (k)",
+     ylab = "Average Silhouette Width",
+     main = "Silhouette Method for Optimal k")
+
+```
+
+En la gráfica de WSS/TSS se observa que la proporción disminuye rápidamente al inicio y comienza a estabilizarse aproximadamente a partir de $k = 3$, lo que indica que agregar más clusters después de ese punto aporta mejoras marginales; de manera consistente, el método de Silhouette muestra su valor promedio máximo en $k = 3$, por lo que ambos criterios coinciden en que el número óptimo de clusters es 3.
+
+### Explorando el numero de clustes K subyacentes a estos datos con otros metodos
+
+``` {r K-Means receta3, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+fviz_nbclust(df1, kmeans, method = "wss")+labs(x ="Número de clusters")+labs(y="Total suma de cuadrados intra clusters")+labs(title = "Número óptimo de clusters")
+
+opt<-Optimal_Clusters_KMeans(df1, max_clusters=10,plot_clusters = TRUE,criterion="WCSSE")
+
+# fviz_nbclust(df1, kmeans, method = "silhouette")+labs(x ="Número de clusters")+labs(y="Promedio de silueta")+labs(title = "Número óptimo de clusters")
+
+# opt1<-Optimal_Clusters_KMeans(df1, max_clusters=10, plot_clusters = TRUE, criterion="silhouette")
+
+# opt2<-Optimal_Clusters_KMeans(df1, max_clusters=10, plot_clusters = TRUE, criterion = "variance_explained",fK_threshold = 0.90)
+
+# fviz_nbclust(df1, kmeans, method = "gap_stat")+labs(x ="Número de clusters")+labs(y="GAP")+labs(title = "Número óptimo de clusters")
+
+fit <- cascadeKM(df1, 2, 10, iter = 500)
+plot(fit, sortg = TRUE, grpmts.plot = TRUE)
+
+opt_aic<-Optimal_Clusters_KMeans(df1, 10, 'euclidean', plot_clusters=TRUE,criterion="AIC")
+
+```
+
+```{r K-Means receta3aa, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+# Esto ejecutará NbClust, mostrará SUS gráficas automáticas
+# pero ocultará todo el texto/output de consola
+sink(nullfile())  # o tempfile()
+nb <- NbClust(df1, distance = "euclidean", 
+              min.nc = 2, max.nc = 10, 
+              method = "ward.D", index = "all")
+sink()  # ¡IMPORTANTE! Restaurar después
+
+# names(nb) 
+# 
+# nb$Best.nc
+
+```
+
+En el primer conjunto de gráficas (estadístico Hubert), el indicador crece al aumentar k, pero las segundas diferencias muestran picos relevantes en valores bajos de k, destacando nuevamente que la estructura más marcada del agrupamiento aparece alrededor de $k \approx 3$; de forma consistente, en el segundo conjunto (método Dindex), se observa que el indicador disminuye conforme aumenta el número de clusters, pero el gráfico de segundas diferencias presenta un cambio fuerte alrededor de $k = 3$, lo que sugiere que en ese punto se captura la separación principal, por lo que ambos criterios apuntan a que el número óptimo de clusters se encuentra cerca de 3 grupos.
+
+```{r K-Means3.1, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=8, fig.height=3, dpi=100}
+
+plot(nc)
+
+```
+
+En esta gráfica podemos observar que la evidencia global (Silhouette, Gap_Maechler2012, Gap_Dudoit2002, kl, Ch, Hartigan, Scott, Marriot, trcovw, Tracew, Friedman, Rubin, DB, Duda, Pseudot2, Beale, Ratkowsky, Ball, PtBiserial, Dunn, SDindex, Mixture (VVE), Mixture (EVE)) indica que la partición más robusta y consistente para los datos es 3 clusters (con 80%).
+
+# Metodos de clusterizacion
+
+## Metodo Jerarquico
+
+``` {r plots1, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=10, fig.height=4, dpi=120}
+par(mfrow = c(1, 2))
+
+sink(nullfile())  # o tempfile()
+
+cbind(cor(dist_df,d_ave),cor(dist_df,d_single),cor(dist_df,d_comp),cor(dist_df,d_ward),cor(dist_df,d_ward2))
+
+plot(hc_ave)
+
+plot(hc_comp)
+
+plot(hc_ward)
+abline(h=40,lty=3,col="red") #tentador
+
+plot(hc_ward2)
+abline(h=15,lty=3,col="red") #tentador
+
+sink()  # ¡IMPORTANTE! Restaurar después
+
+```
+
+Al analizar ambas duplas de dendogramas, se observa que las distancias basadas en los métodos average y complete no logran una separación tan definida entre los grupos. En contraste, las medidas ward y ward.D2 representan de manera más adecuada la distancia entre los conglomerados, lo que permite diferenciarlos con mayor claridad. En ambos casos, la estructura resultante sugiere la presencia de tres clústeres bien delimitados.
+
+``` {r Plots2, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=10, fig.height=4, dpi=120}
+fviz_dend(hc_ward, cex = 0.65, k = 3, color_labels_by_k = TRUE, rect = TRUE, rect_fill = TRUE, k_colors = "jco", rect_border = "jco", show_labels = F, main="Cluster: Liga ward dendrograma (3 grupos)") # mas tentador
+
+```
+Decidimos elegir la distancia Ward ya que es la que presenta un mejor estadistico de agnes (0.9419172) que comparado a las otras medidas, no pasaban del 0.81.
+
+Este dendrograma con enlace Ward muestra cómo se van fusionando las observaciones según su similitud (altura = distancia de fusión) y, al cortarlo en 3 grupos, se identifican tres clusters principales bien diferenciados, la separación a mayor altura entre ramas indica que estos grupos están claramente separados entre sí, mientras que dentro de cada bloque las fusiones ocurren a alturas bajas, lo que sugiere buena cohesión interna en cada cluster.
+
+### Con otro metodo aglomerativo: agnes
+
+``` {r agnes, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+df1<-as.data.frame(df1)
+
+ac_metric <- list(
+  complete_ac = agnes(df1, metric = "euclidean", method = "complete")$ac,
+  average_ac = agnes(df1, metric = "euclidean", method = "average")$ac,
+  single_ac = agnes(df1, metric = "euclidean", method = "single")$ac,
+  ward_ac = agnes(df1, metric = "euclidean", method = "ward")$ac
+)
+
+ac_metric
+```
+
+
+```{r Plots4, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=10, fig.height=3.5, dpi=150}
+par(mfrow = c(1, 2))
+plot(agnes(df1, metric = "euclidean", method = "ward"))
+plot(diana(df1, metric = "euclidean"))
+```
+
+El método AGNES ha generado una estructura jerárquica muy clara, con un coeficiente de 0.94, lo que sugiere que los datos tienen una buena cohesión interna.El dendrograma permite identificar visualmente el número óptimo de clústeres. Por ejemplo, si se corta a una altura donde hay tres ramas principales, podrías considerar tres clústeres como una solución razonable.Ademas, el método DIANA ha generado una estructura clara de divisiones, con un coeficiente alto (0.8), lo que indica que los datos tienen una buena separación natural.El dendrograma puede ayudar a decidir el número óptimo de clústeres, por ejemplo, cortando en un nivel donde se formen 3 o 4 grupos bien diferenciados.
+
+```{r K-Means3.1aa, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+set.seed(123)
+
+nc<-n_clusters(
+  df,
+  standardize = TRUE,
+  include_factors = FALSE,
+  package = c("easystats", "NbClust", "mclust"),
+  fast = TRUE,
+  nbclust_method = "kmeans",
+  n_max = 10
+)
+
+nc #Importante
+# The choice of 3 clusters is supported by 23 (79.31%) methods out of 29 (Silhouette, Gap_Maechler2012, Gap_Dudoit2002, kl, Ch, Hartigan, Scott, Marriot, trcovw, Tracew, Friedman, Rubin, DB, Duda, Pseudot2, Beale, Ratkowsky, Ball, PtBiserial, Dunn, SDindex, Mixture (VVE), Mixture (EVE)).
+```
+
+
+### Con tidymodels
+
+<!-- ### Sin declarar liga -->
+
+```{r Sin declarar liga, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+hclust_spec <- hier_clust() %>%
+  set_engine("stats")
+
+hclust_fit1 <- tidyclust::fit(hclust_spec, ~., df1)
+
+hclust_fit1 %>%
+  extract_centroids(num_clusters = 2)%>%print(Inf)
+```
+
+```{r Plots5, warning=FALSE, message=FALSE, echo=FALSE}
+# hclust_fit1$fit %>% plot()
+```
+
+
+<!-- ### Declarando ligas -->
+
+``` {r Declarar liga, include=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+res_hclust_complete <- hier_clust(linkage_method = "complete") %>%
+  tidyclust::fit(~., data = df1)
+  
+res_hclust_average <- hier_clust(linkage_method = "average") %>%
+  tidyclust::fit(~., data = df1)
+
+res_hclust_single <- hier_clust(linkage_method = "single") %>%
+  tidyclust::fit(~., data = df1)
+
+res_hclust_ward <- hier_clust(linkage_method = "ward.D") %>%
+  tidyclust::fit(~., data = df1)
+  
+res_hclust_ward2 <- hier_clust(linkage_method = "ward.D2") %>%
+  tidyclust::fit(~., data = df1)  
+  
+```
+
+```{r Plots6, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=8, fig.height=6, dpi=150}
+par(mfrow = c(3, 2))
+hclust_fit1$fit %>% plot()
+
+res_hclust_complete$fit %>% plot()
+
+
+
+res_hclust_average$fit %>% plot()
+
+
+
+res_hclust_single$fit %>% plot()
+
+
+
+res_hclust_ward$fit %>% plot()
+
+
+
+res_hclust_ward2$fit %>% plot()
+```
+
+``` {r Interesante predict Fail, include=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+###Interesante predict
+
+res_hclust_ward <- hier_clust(
+    num_clusters = 3,          # Specify the number of clusters
+    linkage_method = "ward.D"  # Options: "ward.D", "ward.D2", "complete", etc.
+  ) %>%
+  set_engine("stats")
+
+# 2. Fit the model to your data
+# Ensure 'df1' is numeric and contains no missing values
+hclust_fit1 <- fit(res_hclust_ward, ~ ., data = df1)
+hclust_fit1_predict<- hclust_fit1 |>
+   predict(new_data = df1, num_clusters =3)  ###Predicción de todas las observaciones, asumiendo tres grupos
+
+# hclust_fit1 |>
+#   predict(new_data = df1, num_clusters = 3)  ###Aquí suponemos que 2 grupos subyacen a nuestros datos
+
+df4 <- cbind(df,hclust_fit1_predict)
+
+(tabla_cruzada <- table(df4$Type, df4$`.pred_cluster`))
+
+# hclust_fit1 |>
+#   predict(new_data = df1, cut_height = 40)  ###AQuí consideramos que a esta altura se definen los grupos en nuestros datos
+# 
+ # hclust_fit1_predict<- hclust_fit1 |>
+ #   predict(new_data = df1, num_clusters =2)  ###Predicción de todas las observaciones, asumiendo dos grupos
+print(paste0('La predicción es de ' , sum(diag(tabla_cruzada))/sum(tabla_cruzada)))
+```
+
+Utilizando la medida Ward, logramos predecir correctamente el 96% de las observaciones, es decir, solamente solo se clasificaron mal 7 observaciones de las 178.
+
+### K-Means automatico
+
+El siguiente método explorado es el metodo de K-means escogiendo el parametro K de manera automatica con ayuda de los paquetes en R.
+
+``` {r K-Means, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+ggpairs(df[,-1],
+        upper = list(continuous = "density"),
+        lower = list(continuous = wrap("points", size = 0.5)),
+        diag = list(continuous = "densityDiag")) +
+  theme_bw()
+
+set.seed(123)
+
+dfTask <- makeClusterTask(data = df[,-1])
+listLearners("cluster")$class
+#install.packages("clue")
+kMeans <- makeLearner("cluster.kmeans",par.vals = list(iter.max = 2500, nstart = 25))
+kMeans
+
+kMeansParamSpace <- makeParamSet(
+  makeDiscreteParam("centers", values = 2:6),
+  makeDiscreteParam("algorithm",
+                    values = c("Hartigan-Wong", "Lloyd", "MacQueen")))
+gridSearch <- makeTuneControlGrid()
+kFold <- makeResampleDesc("CV", iters = 25)
+
+set.seed(123)
+
+tunedK <- tuneParams(kMeans, task = dfTask,
+                     resampling = kFold,
+                     par.set = kMeansParamSpace,
+                     control = gridSearch,
+                     measures = list(db, G1))
+
+tunedK
+
+set.seed(123)
+
+kMeansTuningData <- generateHyperParsEffectData(tunedK)
+#kMeansTuningData$data
+gatheredTuningData <- gather(kMeansTuningData$data,
+                             key = "Metric",
+                             value = "Value",
+                             c(-centers, -iteration, -algorithm))
+
+```
+
+```{r K-Means1.1, warning=FALSE, message=FALSE, echo=FALSE, fig.width=12, fig.height=5, dpi=110}
+
+ggplot(gatheredTuningData, aes(centers, Value, col = algorithm)) +
+  facet_wrap(~ Metric, scales = "free_y") +
+  geom_line() +
+  geom_point() +
+  theme_bw()
+```
+
+MacQueen es el más rápido y mejora la separación entre clústeres de forma consistente, Lloyd genera clústeres más compactos pero tarda más y por otro lado, Hartigan-Wong tiene buen desempeño pero es más costoso computacionalmente.
+
+```{r K-Means2, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+set.seed(123)
+
+tunedKMeans <- setHyperPars(kMeans, par.vals = tunedK$x)
+tunedKMeansModel <- train(tunedKMeans, dfTask)
+kMeansModelData <- getLearnerModel(tunedKMeansModel)
+kMeansModelData$iter
+
+tunedKMeans
+
+df2 <- mutate(df[,-1],kMeansCluster = as.factor(kMeansModelData$cluster))
+
+table(df2$kMeansCluster)
+```
+
+```{r K-Means2.a, warning=FALSE, message=FALSE, echo=FALSE}
+
+GGally::ggpairs(df2, aes(col = kMeansCluster), upper = list(continuous = "density")) +
+  theme_bw()
+
+```
+\newpage
+
+El método de k-means que escoge el número de clusters de manera automática se decanta por 6 grupos, si observamos cada una de la interacciones dentro del plano generado por un par de variables podemos observar que por ejemplo dentro de la dimensión de Fenoles y Alcalinidad si hay una separación entre 2 subconjuntos de los grupos pero no entre todos los grupos, concluyendo que con mayor número de datos genera ruido en la clasificación.
+
+``` {r K-Means receta4, warning=FALSE, message=FALSE, echo=FALSE}
+newData <- tibble(df2[,-14])
+
+preciccionkmeans <- predict(tunedKMeansModel, newdata = newData)
+
+df5 <- cbind(df,preciccionkmeans$data)
+
+(tabla_cruzada2 <- table(df5$Type, df5$response))
+
+```
+
+Se puede apreciar que seis grupos son demasiados para el conjunto de datos, y no hay una clasificación consistente de dos clusters con algún tipo de vino en particular. De hecho, los clusters 1 y 5 se distribuyen entre el tipo 2 y 3 de vino, y todos los demás vinos se clasifican como el tipo 1 de vino.
+
+### Clusters con K-means manual
+
+``` {r K-Means receta4aa, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+###¿2, 3, o 4, clusters?
+
+k2 <- kmeans(df1, centers = 2, nstart = 25)
+k3 <- kmeans(df1, centers = 3, nstart = 25)
+k4 <- kmeans(df1, centers = 4, nstart = 25)
+
+###Suma del error cuadrático
+###Una métrica sencilla es el error cuadrático de suma dentro de un conglomerado (WSS), 
+###que mide la suma de todas las distancias desde las observaciones hasta el centro de su conglomerado. 
+###A veces, esto se escala con el error cuadrático de suma total (TSS), la distancia desde todas las observaciones hasta 
+###el centroide global; en particular, a menudo se calcula la relación WSS/TSS. 
+###En principio, los valores pequeños de WSS o de la relación WSS/TSS sugieren que las observaciones dentro 
+###de los conglomerados están más cerca (son más similares) entre sí que con respecto a los otros conglomerados.
+
+# k2$tot.withinss/k2$totss; k3$tot.withinss/k3$totss; k4$tot.withinss/k4$totss
+
+p2 <- fviz_cluster(k2, geom = "point", data = df1)+ ggtitle("k = 2")
+p3 <- fviz_cluster(k3, geom = "point",  data = df1) + ggtitle("k = 3")
+p4 <- fviz_cluster(k4, geom = "point",  data = df1) + ggtitle("k = 4")
+
+
+grid.arrange(p2, p3, p4, ncol = 3)
+
+###Concluimos que hay K=3 grupos de vinos
+
+q1 <- fviz_cluster(k3, geom = "point",  data = df1) + ggtitle("Número de grupos de vinos: 3")
+
+q2 <- fviz_cluster(k3, data = df1,
+             palette=c("deeppink3", "magenta3","purple"),
+             ellipse.type = "euclid",
+             star.plot = T,
+             repel = T,
+             ggtheme = theme())+ ggtitle("Número de grupos de vinos: 3")
+
+q3 <- fviz_cluster(k3, df1, ellipse.type = "norm")
+
+q4 <- fviz_cluster(k3, df1, palette = "Set2", ggtheme = theme_minimal())
+
+grid.arrange(q1, q2, q3, q4, ncol = 2, nrow = 2)
+
+require(tibble)
+
+sink(nullfile())  # o tempfile()
+
+k3T <- k3 %>%
+      extract_centroids()%>% as_tibble() %>% print(width=Inf)
+
+sink()  # ¡IMPORTANTE! Restaurar después               
+
+(K3Bueno <- as.data.frame(t(k3T)))
+
+kmeans_clusters <- 
+  bind_cols(df1, cluster=k3$cluster)
+
+kmeans_clusters %>%
+  pivot_longer(-cluster) %>% 
+  ggplot(aes(x = as.factor(cluster), y = value, fill = as.factor(cluster))) +
+  geom_boxplot(show.legend = FALSE) +
+  facet_wrap(vars(name), scales = "free") 
+
+kmeans_clusters %>% 
+  group_by(cluster) %>% 
+  summarise(num_users = n()) %>% 
+  mutate(pct_users = num_users / sum(num_users))
+
+TC<-table(df$Type,k3$cluster)
+TC
+
+# sum(diag(TC[, ncol(TC):1]))/sum(TC)
+
+
+
+###Y si hacemos cluster, primero haciendo reduccion de dimension a traves de PCA
+###3 componentes proporcionan alrededor del 66% de la varianza explicada y 4 un poco mas del 73%
+```
+
+``` {r K-Means receta4aaab, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=15, fig.height=7, dpi=100}
+kmeans_clusters <- 
+  bind_cols(df1, cluster=k3$cluster)
+
+kmeans_clusters %>%
+  pivot_longer(-cluster) %>% 
+  ggplot(aes(x = as.factor(cluster), y = value, fill = as.factor(cluster))) +
+  geom_boxplot(show.legend = FALSE) +
+  facet_wrap(vars(name), scales = "free") 
+
+kmeans_clusters %>% 
+  group_by(cluster) %>% 
+  summarise(num_users = n()) %>% 
+  mutate(pct_users = num_users / sum(num_users))
+
+TC<-table(df$Type,k3$cluster)
+TC
+
+```
+
+Observese que con el metodo de K-means, mediante inspeccion visual, se confirma que el numero de clusters ideal es 3, pues 4 traslapa los limites de cada grupo.
+
+En el grafico de boxplots, cada uno representa cómo varía una propiedad química del vino entre tres grupos generados por nuestro algoritmo de clasificación.
+
+### Hallazgos clave por propiedad
+
+- **Alcohol, Flavanoids, Proline, Phenols**:  
+  Estas propiedades muestran diferencias marcadas entre los clusters. Por ejemplo, el cluster 1 tiene valores más altos de alcohol y flavonoides, lo que podría indicar un perfil químico distintivo.
+
+- **Color, Hue, Malic, Nonflavanoids**:  
+  También presentan variaciones entre clusters, aunque menos pronunciadas. Esto sugiere que podrían contribuir a la separación, pero no son tan determinantes.
+
+- **Ash, Magnesium, Alcalinity, Dilution**:  
+  Estas propiedades tienen distribuciones más similares entre los clusters, lo que indica que no ayudan mucho a diferenciarlos.
+
+El modelo logró separar los vinos en tres grupos con diferencias químicas claras en algunas propiedades (como alcohol y flavonoides), pero otras propiedades no aportan mucho a la separación. Si estos clusters los comparamos con los tipos reales de vino, encontramos un accuracy del 96% clasificando mal solo 6 observaciones.
+
+### Clusters jerarquicos con PCA
+
+``` {r K-Means receta5 part1, warning=FALSE, message=FALSE, echo=FALSE, fig.width=15, fig.height=4, dpi=150}
+par(mfrow = c(1, 2))
+# kk<-eigen(cor(df1))
+# sum(kk$values[1:3])/sum(kk$values); sum(kk$values[1:4])/sum(kk$values)
+
+###Clusters herarquicos
+
+df_pca_rec <- recipe(~ ., data = df) %>%
+  update_role(Type, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = 4)
+
+df_pca_wf <- workflow() %>%
+  add_recipe(df_pca_rec)
+
+###Cluster herarquicos
+
+df_pca_hier <- df_pca_wf %>%
+  add_model(hier_clust(linkage_method = "ward.D")) %>%
+  fit(data = df) %>%
+  extract_fit_engine() %>%
+  plot()
+
+df_pca_hier <- df_pca_wf %>%
+  add_model(hier_clust(linkage_method = "ward.D2")) %>%
+  fit(data = df) %>%
+  extract_fit_engine() %>%
+  plot()
+
+# df_pca_hier <- df_pca_wf %>%
+#   add_model(hier_clust(linkage_method = "ward.D")) %>%
+#   fit(data = df) %>%
+#   extract_fit_engine() %>%
+#   fviz_dend(k = 3, main = "Dendograma basado en PCA: Liga Ward")%>%
+#   plot()
+```
+
+``` {r K-Means receta5 part2, warning=FALSE, message=FALSE, echo=FALSE, fig.width=15, fig.height=4, dpi=150}
+df_pca_hier <- df_pca_wf %>%
+  add_model(hier_clust(linkage_method = "ward.D")) %>%
+  fit(data = df) %>%
+  extract_fit_engine() %>%
+  fviz_dend(k = 3, main = "Dendograma basado en PCA: Liga Ward")%>%
+  plot()
+```
+
+De manera similar, aplicando PCA y clusters jerarquicos, logramos identificar que la mejor medida es la ward para este metodo.
+
+``` {r K-Means cont1, warning=FALSE, message=FALSE, echo=FALSE}
+df_pca_rec1 <- recipe(~ ., data = df_o) %>%
+  update_role(Type, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = 4)
+
+df_pca_wf1 <- workflow() %>%
+  add_recipe(df_pca_rec1)
+
+fit_engine1 <- df_pca_wf1 %>%
+  add_model(hier_clust(linkage_method = "ward.D2")) %>%
+  fit(data = df_o) %>%
+  extract_fit_engine()
+
+# Crear el vector de clusters (ejemplo para 3 grupos)
+grupos <- cutree(fit_engine1, k = 3)
+dfw <- cbind(df_o, cluster = as.vector(grupos))
+
+TC1<-table(dfw$Type,dfw$cluster)
+TC1
+sum(diag(TC1))/sum(TC1)
+```
+Utilizando clusters jerarquicos precedidos por PCA no tuvo tan buenos resultados como la utilizacion de solo clusters jerarquicos. pues solo alcanzamos un 92% de poder predictivo teniendo 13 observaciones mal clasificadas.
+
+### K-means con PCA
+
+``` {r K-Means cont, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+kmeans_specific <- k_means(num_clusters = 3) %>%
+  set_engine("ClusterR")
+kmeans_specific
+
+kmeans_workf <- workflow(df_pca_rec, kmeans_specific)
+
+kmeans_proc <- fit(kmeans_workf, data = df)
+kmeans_proc
+
+kmeans_specific1 <- kmeans_specific %>% 
+  set_args(num_clusters = tune())
+
+kmeans_workf1 <- workflow(df_pca_rec, kmeans_specific1)
+kmeans_workf1
+
+set.seed(123)
+boots <- bootstraps(df, times = 10)
+
+tune_res <- tune_cluster(
+  kmeans_workf1,
+  resamples = boots
+)
+
+collect_metrics(tune_res)
+
+extract_cluster_assignment(kmeans_proc) %>% print(n=Inf)
+
+extract_centroids(kmeans_proc)
+
+predict(kmeans_proc, new_data = slice_sample(as.data.frame(df),n = 10))
+
+kmeans_summary <- kmeans_proc %>%
+  extract_fit_summary()
+
+kmeans_summary
+
+tibble(
+  orig_labels = kmeans_summary$orig_labels,
+  standard_labels = kmeans_summary$cluster_assignments  ###Mismas asignaciones con distintas etiquetas
+)
+
+TC_CP<-table(df$Type,kmeans_summary$orig_labels)
+TC_CP
+
+```
+
+``` {r K-Means receta4aaa, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=12, fig.height=3, dpi=110}
+grid.arrange(p2, p3, p4, ncol = 3)
+
+```
+
+``` {r K-Means receta4aaab2, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=12, fig.height=6.5, dpi=110}
+grid.arrange(q1, q2, q3, q4, ncol = 2, nrow = 2)
+
+```
+
+``` {r K-Means conta, warning=FALSE, message=FALSE, echo=FALSE}
+
+# extract_centroids(kmeans_proc)
+# 
+# TC_CP<-table(df$Type,kmeans_summary$orig_labels)
+# TC_CP
+
+class_pca<-kmeans_summary$cluster_assignments
+
+# head(class_pca)
+
+table(kmeans_clusters$cluster,class_pca)
+
+# kmeans_proc %>%
+#   silhouette_avg(df)
+
+##Graficas finales
+
+pca_cluster <-recipe(~ ., data = df) %>%
+  update_role(Type, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = 4) %>%
+  prep(df) %>%
+  bake(df)
+
+pca_clusters2 <- 
+  bind_cols(pca_cluster, cluster=k3$cluster)
+
+head(pca_clusters2)
+
+```
+
+Podemos observar que la aplicacion de K-means precedida de componentes principales (PCA) llega a ser mas eficiente que la aplicacion cruda de las variables de la base, aumentando su accuracy de un 96% a un 98.8%.Esto nos indica que en cuanto a costo computacional nos conviene el uso de componentes principales, pues es incluso aumentamos el poder predictivo.
+
+\newpage
+
+## DBSCAN
+
+``` {r prep DBSCAN, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+df <- read.csv("wine.csv")
+df <- df %>% 
+  mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
+
+df1<- df %>% dplyr::select(-Type) %>% scale()
+summary(df1)
+
+set.seed(123)
+
+df <- df %>%
+  dplyr::select(where(is.numeric)) %>%
+  scale() 
+
+summary(df)
+```
+
+``` {r DBSCAN, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+kNNdistplot(df, k =11) ###Ubicar el intervalo
+
+set.seed(123)
+kNNdistplot(df, k =11)
+abline(h=c(3.9,4.6),lty=2,col="blue")
+
+###Si la hacemos nosotros
+
+set.seed(123)
+tibble(dist = sort(kNNdist(df ,k = 11), decreasing = F),index = 1:nrow(df)) %>% 
+  ggplot(aes(x=index, y=dist))+ 
+    geom_line() +
+    coord_cartesian(xlim=c(0, nrow(df)), 
+                    ylim=c(0, 5))+
+    geom_hline(yintercept=c(3.9,4.6), linetype='dashed', col = 'blue')
+
+###Parece que antes de 3.96 es un valor adecuado para capturar la mayoria 
+###de nuestros datos, antes de que se empiece a considerar a los valores atípicos que estan mucho mas separados o distantes. 
+###Una doble verificación de nuestra trama es tambien calcular algunos percentiles en nuestras distancias. 
+###Por ejemplo, podemos ver que porcentaje de observaciones tienen una distancia inferior a un cuantil dado
+
+set.seed(123)
+quantile(kNNdist(df ,k = 11), c(0.70,0.75, 0.8, 0.9, 0.95, 0.99, 0.995, 0.999))
+
+###Observamos que el 95% de nuestros datos, tienen una distancia menor a 3.94, lo que implica que nuestro corte a
+###3.94, esta "pelin" excedido. Bien, con esta exploracion, nuestros valores "optimos" son: epsilon=3.94 y minPts=11
+
+set.seed(123)
+
+df_clust <- dbscan(df, eps = 3.94, minPts = 11)
+
+df_clust 
+
+plot(df, col=df_clust$cluster+1, main="DBSCAN", pch=19)
+
+fviz_cluster(df_clust, data = df)
+
+###The clustering contains 1 cluster(s)!!! and 9 noise points
+
+###Podríamos "jugar" con alguno de los parametros y ver si obtenemos una mejor agrupacion.
+###Si asumimos un 10% de datos atipicos, el parametro eps seria  2.297072. Veamos que pasa tomando este valor 
+
+set.seed(123)
+
+df_clust2 <- dbscan(df, eps = 2.9, minPts = 11)
+
+df_clust2 
+
+plot(df, col=df_clust2$cluster+1, main="DBSCAN", pch=19)
+
+```
+
+
+```{r DBSCAN3, warning=FALSE, message=FALSE, echo=FALSE,  fig.width=12, fig.height=5, dpi=100}
+kNNdistplot(df, k =11)
+abline(h=c(3.9,4.6),lty=2,col="blue")
+
+# plot(df, col=df_clust2$cluster+1, main="DBSCAN", pch=19)
+# fviz_cluster(df_clust, data = df)
+
+```
+
+Similar a un analisis anterior, presente reachibility plot muestra que unicamente se distingue un grupo topografiado por el metodo dbscan, pues no se observan picos intermedios dentro del dominio de la grafica.
+
+```{r DBSCAN3plot1, warning=FALSE, message=FALSE, echo=FALSE, dev='png',  fig.width=12, fig.height=5, dpi=100}
+par(mfrow = c(1, 2))
+
+plot(df, col=df_clust$cluster+1, main="DBSCAN", pch=19)
+
+plot(df, col=df_clust2$cluster+1, main="DBSCAN", pch=19)
+```
+
+Haciendo el ejercicio de mover el parametro eps notamos que un valor de 3.94 (99%) unicamente clasifica como ruido a 3 observaciones, pero un eps de 2.9 (70%) el numero de supuestos outliers aumenta sustancialmente, sin embargo la composicion de este grupo no es lo suficientemente homogenea para considerarla un nuevo cluster.
+
+
+```{r DBSCAN3aa, include =FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+###Muy similar. Aumentando el numero de outliers, pero solo un grupo
+
+###¿Hay alguna forma mas tecnica de hacer una busqueda?
+
+k <- c(5, 10, 15, 20, 25, 30)
+eps <- c(1.5, 2.0, 2.5, 3.0, 3.5, 4)
+
+grid <- expand.grid(k = k, eps = eps)
+
+results <- mapply(grid$k, grid$eps, FUN = function(k, eps) {
+  cluster <- dbscan(df, minPts = k, eps = eps)$cluster
+  sum <- table(cluster)
+  cat(c("k =", k, "; eps =", eps, ";", sum, "\n"))
+})
+
+###eps mas pequeño
+
+k <- c(5, 10, 15, 20, 25, 30)
+eps <- c(0.15, 0.2, 0.25, 0.3, 0.35, 0.4)
+
+grid <- expand.grid(k = k, eps = eps)
+
+results <- mapply(grid$k, grid$eps, FUN = function(k, eps) {
+  cluster <- dbscan(df, minPts = k, eps = eps)$cluster
+  sum <- table(cluster)
+  cat(c("k =", k, "; eps =", eps, ";", sum, "\n"))
+})
+
+###Ningun exito
+
+###Otra forma
+
+res_dbscan_knn <- n_clusters_dbscan(as.data.frame(df), 
+                                standardize = FALSE,
+                                eps_range = c(0.001, 4),
+                                min_size = 11,
+                                distance_method = "euclidean",
+                                method = "SS")
+
+res_dbscan_knn
+
+###IGUAL
+
+###ULTIMA
+
+###Realizando una variacion conjunta de estos parametros
+
+dbsParamSpace <- expand.grid(eps = seq(0.2, 4.0, 0.2),minPts = seq(5,20,2))
+
+# set.seed(123)
+# 
+# df_dbscan_res <- pmap(dbsParamSpace, dbscan, x = df)
+# 
+# df_dbscan_res
+
+###NADA NUEVO
+
+### Todos los procesos implementados apuntan a un único grupo y una serie de observaciones de ruido
+
+###Funcionara si usamos PCA en lugar de las variables?
+
+###Con PCA
+
+pca_df <-
+  recipe(~ . , data = df) %>% 
+  step_pca(all_numeric_predictors(),threshold = 0.90) %>% 
+  prep(df) %>%
+  bake(df)
+
+pca_df <- bind_cols(pca_df)
+
+head(pca_df)
+
+ggpairs(pca_df , upper = list(continuous = "density")) +
+  theme_bw()
+
+###Explorando los valores de eps
+
+pcaScaled<-pca_df %>% scale()
+
+head(pcaScaled)
+
+set.seed(123)
+kNNdistplot(pcaScaled, k = 11)
+
+kNNdistplot(pcaScaled, k = 11)
+abline(h = c(3,4),lty=2,col=c("red","blue"))
+
+set.seed(123)
+tibble(dist = sort(kNNdist(pcaScaled ,k = 11), decreasing = F),index = 1:nrow(pcaScaled)) %>% 
+  ggplot(aes(x=index, y=dist))+ 
+    geom_line() +
+    coord_cartesian(xlim=c(0, nrow(pcaScaled)), 
+                    ylim=c(0, 4))+
+    geom_hline(yintercept=c(3,4), linetype='dashed', col = 'blue')
+
+###Doble verificación de nuestra trama. Calculamos algunos percentiles en nuestras distancias. 
+###Por ejemplo, podemos ver que porcentaje de observaciones tienen una distancia inferior a un cuantil dado
+
+set.seed(123)
+quantile(kNNdist(pcaScaled ,k = 11), c(0.70,0.75, 0.8, 0.9, 0.95, 0.99, 0.995, 0.999))
+
+set.seed(123)
+
+clust_pca <- dbscan(pcaScaled, eps = 1.914, minPts = 11)
+
+clust_pca 
+
+###Explorando parametros
+
+dbsParamSpace1 <- expand.grid(eps = seq(1.5, 2.25, 0.02),minPts = seq(11,25,2))
+
+# set.seed(123)
+# 
+# dfDbs1 <- pmap(dbsParamSpace1, dbscan, x = pcaScaled)
+# 
+# dfDbs1
+
+###Como deberia ser, IGUAL.
+```
+
+\newpage
+
+## HDBSCAN
+
+``` {r HDDBSCAN, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+###HDBSCAN
+
+set.seed(123)
+
+hdb <- hdbscan(df, minPts = 11)
+
+names(hdb)
+
+hdb$cluster
+
+table(hdb$cluster)
+
+plot(hdb)
+
+plot(df, col = hdb$cluster + 1L)
+
+datos_plot <- data.frame(df, cluster = as.factor(hdb$cluster))
+
+table(as.factor(hdb$cluster))
+
+# ggplot(datos_plot, aes(x=radius_mean, y=texture_mean, color = cluster)) +
+#   geom_point(size = 2) +
+#   theme_minimal() +
+#   labs(title = "HDBSCAN Clustering",
+#        color = "Cluster") +
+#   scale_color_viridis_d()
+
+hullplot(df, hdb, main = "HDBSCAN")
+
+df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+df1 <- df1 %>% 
+  mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
+
+###Table Type con Clusters
+table(df1$Type,hdb$cluster)
+
+```
+
+``` {r HDDBSCAN plots, warning=FALSE, message=FALSE, echo=FALSE}
+par(mfrow = c(1, 3))
+
+plot(hdb)
+
+plot(df, col = hdb$cluster + 1L)
+
+hullplot(df, hdb, main = "HDBSCAN")
+
+```
+
+El metodo HDBSCAN identifica 2 grupos en nuestra base de datos, estas 2 regiones estan bien definidas y contienen algunos datos identificados como ruido, encontramos una mejora respecto a DBSCAN que mostraba un cluster general.
+
+### OPTICS
+
+``` {r OPTICS, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+###OPTICS
+
+# par(mfrow = c(1, 3))
+
+sink(nullfile())  # o tempfile()
+
+dfOptics<-optics(df, minPts = 11)
+
+b1 <- plot(dfOptics)
+
+dfOpticsXi <- extractXi(dfOptics, xi = 0.025)
+dfOpticsXi
+
+b2 <- plot(dfOpticsXi)
+
+dfOpticsXi_1 <- extractXi(dfOptics, xi = 0.02)
+dfOpticsXi_1
+
+b3<- plot(dfOpticsXi_1)
+
+extractDBSCAN(dfOptics, eps_cl = 0.05)
+
+sink()  # ¡IMPORTANTE! Restaurar después
+
+```
+
+``` {r OPTICS1, warning=FALSE, message=FALSE, echo=FALSE}
+sink(nullfile())  # o tempfile()
+
+b1 <- plot(dfOptics)
+
+sink()  # ¡IMPORTANTE! Restaurar después
+
+```
+
+El primer ajuste mediante el metodo optics arrojo que el conjunto de datos esta dado por 0 clusters, es decir las 178 observaciones son ruido, asi mismo no nos quedamos de brazos cruzados y procedimos a ajustar el parametro Xi.
+
+``` {r OPTICS3, warning=FALSE, message=FALSE, echo=FALSE}
+
+sink(nullfile())  # o tempfile()
+
+b3<- plot(dfOpticsXi_1)
+
+sink()  # ¡IMPORTANTE! Restaurar después
+
+```
+
+Si uno es curioso y disminuye el parametro Xi a 0.02 se notara que el algoritmo encuentra 6 clusters lo cual no es muy alentador.
+
+```{r TUNING, warning=FALSE, message=FALSE, echo=FALSE}
+###tuning
+sink(nullfile())  # o tempfile()
+set.seed(123)
+
+df_kxi_params <- expand.grid(n_xi = 0.01:0.5, dim_red = "PCA",dist = "euclidean",pts = c(10, 20, 30, 50), n_dimred_comp = 4)
+#install.packages("amap")
+#install.packages("fpc")
+df_kxi_res <- opticskxi_pipeline(df, df_kxi_params)
+
+ggplot_kxi_metrics(df_kxi_res)
+
+best_kxi_res <- get_best_kxi(df_kxi_res, rank = 2)
+
+best_kxi_res
+
+table(best_kxi_res$clusters)
+
+clusters_df <- best_kxi_res$clusters
+fortify_pca(df, sup_vars = data.frame(Clusters = clusters_df)) %>%
+  ggpairs('Clusters', ellipses = TRUE, variables = TRUE)
+sink()  # ¡IMPORTANTE! Restaurar después
+```
+
+Apoyandonos en la tuneacion automatica de los parametros, nos encontramos que el algoritmo optic sugiere la existencia de 4 clusters dentro del dataset. Por lo cual pocedemos a mover el parametro Xi manualmente.
+
+``` {r OPTICS2, warning=FALSE, message=FALSE, echo=FALSE}
+sink(nullfile())  # o tempfile()
+
+b2 <- plot(dfOpticsXi)
+
+sink()  # ¡IMPORTANTE! Restaurar después
+
+```
+
+``` {r Tuning2, warning=FALSE, message=FALSE, echo=FALSE}
+df5 <- cbind(df1, cluster = dfOpticsXi$cluster)
+
+(tabla_cruzada <- table(df5$Type, df5$cluster))
+
+print(paste0('La predicción es de ' , (44 + 49 +48)/sum(tabla_cruzada)))
+```
+
+Utilizando el valor de Xi 0.025 el algoritmo encuentra 3 clusters y ninguna observacion es catalogada como ruido. No obstante, solo se logra un accuracy del 79% prediciendo de manera erronea 37 de las 179
+
+
+### Gaussian Mixture Models
+
+Ahora, usaremos el metodo de mezclas gaussianas (Gaussian Mixture Models).
+
+``` {r Gaussian Mixture Models, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+library(tidyverse)
+library(mclust)
+library(tidymodels)
+library(GGally)
+library(flexmix)
+
+set.seed(123)
+
+K <- 10
+models <- lapply(1:K, function(k) Mclust(df, G = k))
+bic_values <- sapply(models, function(model) BIC(model))
+bic_values
+
+BIC <- mclustBIC(df)
+
+```
+
+```{r Gaussian Mixture Models1.1.1, warning=FALSE, message=FALSE, echo=FALSE}
+plot(BIC)
+
+#summary(BIC)
+```
+
+En primer lugar, el metodo concuerda mediante el criterio del BIC, el numero optimo de clusters son 3.
+
+``` {r Gaussian Mixture Models1.1, include =FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(123)
+
+GMM_model <- Mclust(df, G=3)
+summary(GMM_model, parameters = TRUE)
+```
+
+``` {r Gaussian Mixture Models1.2a, echo=FALSE, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=12, fig.height=7, dpi=110}
+plot(GMM_model, what = "classification")
+
+plot(GMM_model, what = "density", type = "hdr", data = df, points.cex = 0.5)
+
+# plot(GMM_model, what = "classification",fillEllipses=TRUE)
+
+```
+
+En varias combinaciones, los colores están bien separados, lo que indica que algunas variables tienen poder discriminante. En otras, los colores se mezclan, lo que sugiere que esas variables no aportan mucho a la clasificación. Hay combinaciones de variables que permiten distinguir claramente entre los grupos (como Alcohol, Flavanoids, Proline). Otras variables podrían ser redundantes o poco informativas para el modelo. Este análisis visual es útil para decidir qué variables incluir en modelos de clasificación o clustering, y también para validar si los grupos detectados tienen sentido químico.
+
+Por ejemplo:
+
+Alcohol vs Flavanoids: parece haber una separación clara entre grupos, lo que indica que estas variables ayudan a distinguir tipos de vino. Color vs Hue o Phenols vs Proanthocyanidins: también muestran agrupamientos definidos. Ash vs Magnesium o Alcalinity vs Malic: los puntos están más mezclados, lo que sugiere que estas variables no separan bien los grupos.
+
+```{r Gaussian Mixture Models1.3, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+
+###The following six observations all have nearly 50% probability of being assigned to two different clusters
+
+sort(GMM_model$uncertainty, decreasing = TRUE) %>% head()
+
+###Cluster con reduccion de dimension
+
+set.seed(123)
+
+Clust_GMM<- MclustDR(GMM_model)
+summary(Clust_GMM)
+
+plot(Clust_GMM, what = "pairs")
+
+plot(Clust_GMM, what = "boundaries", ngrid = 200)
+
+##Clasificacion
+
+# df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+# 
+# df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+# df1 <- df1 %>% 
+#   mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
+# 
+# 
+
+```
+
+``` {r Gaussian Mixture Models1.3 plots, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=10, fig.height=6, dpi=110}
+par(mfrow = c(1, 2))
+plot(Clust_GMM, what = "pairs")
+
+plot(Clust_GMM, what = "boundaries", ngrid = 200)
+
+Class_GMM <- predict(Clust_GMM)$classification
+
+```
+
+\newpage
+
+``` {r Gaussian Mixture Models1.3 plots2, warning=FALSE, message=FALSE, echo=FALSE}
+
+table(Class_GMM)
+
+tabla_cruzada3 <- table(Class_GMM,df1$Type)
+
+tabla_cruzada3
+
+print(paste0('La predicción es de ' , sum(diag(tabla_cruzada3))/sum(tabla_cruzada3)))
+```
+
+Notese que el algoritmo logra establecer grupos unidos y distinguibles entre si, alcanzando un poder predictivo del 97.7% clasificando incorrectamente unicamente 4 observaciones.
+
+### FLEX MIX 
+
+```{r Gaussian Mixture Models2.1, include = FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(123)
+
+models <- stepFlexmix(df ~ 1, k = 1:8, model = FLXMCmvbinary(), nrep = 200, drop = FALSE)
+
+models
+
+```
+
+```{r Gaussian Mixture Models2.1a,  warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=10, fig.height=4.5, dpi=110}
+plot(models)
+```
+
+### Aqui coincide con DBSCAN y con OPTICS en detectar un solo grupo
+
+```{r Gaussian Mixture Models3, warning=FALSE, message=FALSE, echo=FALSE}
+my_model<-flexmix(df ~ 1, k = 3, model = FLXMCmvbinary())
+
+my_model
+
+###IGUALITO
+```
+
+Por ultimo empleamos el metodo de flex mix, llevandonos la "sorpresa" de que el metodo no encuentra subgrupos bien definidos, aunque se haga el forzaje manual de 3 clusters.
+
+\newpage
+
+### Conclusion 
+
+Finalmente, después de una ardua comparación entre 10 métodos, logramos identificar y rankear los modelos acorde a su accuracy, o en otras palabras, su poder predictivo, presentando la siguiente tabla:
+
+```{r Anuncio DATAFRAMEEEE, warning=FALSE, message=FALSE, echo=FALSE}
+(rankin_df <- data.frame(
+  id = c(1, 2, 3,4,5,6,7,8,9,10),
+  Nombre_Metodo = c("K-Means + PCA", "GMM", "K-Means","Jerarquicos", "Jerarquicos + PCA", "Optics", "K-Means con Tune", "DBSCAN", "HDBSCAN", "FLEXMIX"),
+  Obs_Mal_Clasificadas = c(2, 4, 6, 7, 13, 37, 178, 178,178,178),
+  Poder_Predicitvo = (178- c(2, 4, 6, 7, 13, 37, 178, 178,178,178))/178
+))
+
+
+```
+
+Apreciamos que el modelo GMM se acercó mucho al rendimiento de K-Means + PCA. En adición, reiteramos la preferencia por K-Means + PCA, pues este modelo no paramétrico y al utilizar PCA facilita la interpretación gráfica de los datos.
+
+Los métodos jerárquicos mostraron un desempeño intermedio, siendo útiles para explorar la estructura de los datos, aunque con menor poder predictivo.
+
+Algoritmos como DBSCAN, HDBSCAN y FLEXMIX resultaron menos efectivos en este contexto, con un número elevado de observaciones mal clasificadas.
+
+La inclusión de PCA no solo mejoró la precisión en algunos casos, sino que también aportó claridad visual y redujo la dimensionalidad.
+
+El análisis confirma que la combinación de técnicas (ej. clustering + reducción de dimensionalidad) puede superar a métodos aplicados de forma aislada.
+
+K-Means + PCA se posiciona como la estrategia más robusta y práctica para este conjunto de datos, ofreciendo un balance entre simplicidad, interpretabilidad y poder predictivo.
+
+\newpage
+
+### Anexo 1
+
+### Comparacion de clasificacion por K-Means: Todas las variables vs. CP
+
+``` {r K-Means cont2, warning=FALSE, message=FALSE, echo=FALSE, dev='png', fig.ext="png", fig.width=12, fig.height=7, dpi=100}
+
+cluster_plot <- pca_clusters2 %>% 
+  ggplot(mapping = aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape = factor(cluster)), size = 2) +
+  scale_color_manual(values = c("darkorange","purple","cyan4"))
+
+ggplotly(cluster_plot)
+
+clust_spc_plot <- pca_clusters2 %>% 
+  ggplot(mapping = aes(x = PC1, y = PC2)) +
+  geom_point(aes(shape = factor(cluster), color = Type), size = 2, alpha = 0.8) +
+  scale_color_manual(values = c("darkorange","purple","cyan4"))
+
+clust_spc_plot
+
+ggplotly(clust_spc_plot)
+```
+
+### Anexo 2
+
+```{r Anexo Plots2, warning=FALSE, message=FALSE, echo=FALSE}
+#fviz_dend(hc_ward2, cex = 0.65, k = 3, color_labels_by_k = FALSE, rect = TRUE, rect_fill = TRUE, k_colors = "jco", rect_border = "jco", show_labels = F, main="Cluster: Liga ward2 dendrograma (3 grupos)") #tentador
+
+fviz_dend(hc_ward, cex = 0.8, k = 3,k_colors =c("#FC4E07","#a8a632", "#00AFBB") ,type = "rectangle") #tentador
+
+fviz_dend(hc_ward, cex = 0.8, k = 3,k_colors =c("#FC4E07","#a8a632", "#00AFBB") ,type = "circular") #tentador
+
+#fviz_dend(hc_ward, cex = 0.8, k = 3,k_colors =c("#FC4E07","#a8a632", "#00AFBB") ,type = "phylogenic")
+
+fviz_dend(hc_ward, cex = 0.8, k = 3,k_colors =c("#FC4E07","#a8a632", "#00AFBB") ,type = "phylogenic", repel=TRUE)
+```
+
+```{r session_info, echo=TRUE}
+sessionInfo()
+```
