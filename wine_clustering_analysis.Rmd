@@ -1207,7 +1207,7 @@ table(as.factor(hdb$cluster))
 
 hullplot(df, hdb, main = "HDBSCAN")
 
-df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+df1<-read.csv("wine.csv")
 df1 <- df1 %>% 
   mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
 
@@ -1399,9 +1399,9 @@ plot(Clust_GMM, what = "boundaries", ngrid = 200)
 
 ##Clasificacion
 
-# df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+# df1<-read.csv("wine.csv")
 # 
-# df1<-read.csv("C:/Users/Mikey/Downloads/Diplomado/Modulo 2/wine.csv")
+# df1<-read.csv("wine.csv")
 # df1 <- df1 %>% 
 #   mutate(Type = relevel(as.factor(Type), "1", "2", "3"))
 # 
