@@ -6,7 +6,7 @@ Comprehensive unsupervised learning analysis of the UCI Wine dataset, applying a
 
 | Method | Family | Key result |
 |---|---|---|
-| Hierarchical clustering (Ward, Average, Agnes) | Partition | 3 clusters confirmed |
+| Hierarchical clustering (Ward, Average, Agnes) | Hierarchical | 3 clusters confirmed |
 | K-Means | Partition | K=3 optimal (WSS + Silhouette) |
 | K-Means on PCA components | Dimensionality reduction + partition | 66% variance with 3 PCs |
 | DBSCAN / HDBSCAN | Density-based | 1 dense cluster + noise points |
@@ -24,7 +24,7 @@ The `wine.csv` file is included in this repository. Original source: Forina, M. 
 
 ## Key findings
 
-- **23 out of 29 methods** (NbClust) agree that K=3 is the optimal number of clusters, aligning perfectly with the 3 known wine types.
+- **23 out of 29 methods** (`parameters::n_clusters`: NbClust indices, silhouette, gap statistic and mclust mixtures) agree that K=3 is the optimal number of clusters, aligning perfectly with the 3 known wine types.
 - **DBSCAN and OPTICS** consistently detect a single dense cluster with noise points, suggesting the wine groups overlap in density-based space — a meaningful contrast to partition methods.
 - **PCA** with 3 components explains ~66% of variance; clustering on reduced dimensions yields results consistent with full-feature clustering.
 - **GMM (VVE model)** confirms 3 probabilistic clusters with 6 observations showing >50% uncertainty between two groups.
@@ -57,6 +57,10 @@ Platform: x86_64-w64-mingw32/x64 (Windows 10)
 Key packages: `tidymodels 1.4.1` · `factoextra 1.0.7` · `FactoMineR 2.12` · `dbscan 1.2.4` · `ClusterR 1.3.6` · `NbClust 3.0.1` · `pvclust 2.2-0` · `plotly 4.11.0` · `igraph 2.2.1`
 
 Full session info is included at the end of the compiled document.
+
+## Language
+
+The analysis report (Rmd / notebook text) is written in Spanish; this README is in English.
 
 ## Authors
 
